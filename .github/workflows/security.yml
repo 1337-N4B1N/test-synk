@@ -1,0 +1,70 @@
+name: security-gate
+
+# When does this run?
+#  - on every push to any branch
+#  - on every pull request targeting main
+# A failing job here = a red check. Combined with branch protection on main
+# (see README), a red check BLOCKS the merge. That is your "prevent pushing".
+on:
+  push:
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Python dependency scan (SCA): checks requirements.txt versions against
+  #    the PyPI Advisory DB / NVD. This is the job that catches PyYAML 5.3.1.
+  # ---------------------------------------------------------------------------
+  python-dependency-scan:
+    name: Python deps (pip-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pip-audit
+        run: pip install pip-audit==2.7.3
+      - name: Audit backend dependencies
+        # Fails (non-zero exit) if any pinned package has a known CVE.
+        run: pip-audit -r backend/requirements.txt --strict
+
+  # ---------------------------------------------------------------------------
+  # 2. Python static analysis (SAST): scans source for insecure patterns.
+  #    This catches the yaml.load() call in the /unsafe view (bandit B506).
+  # ---------------------------------------------------------------------------
+  python-static-analysis:
+    name: Python code (bandit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install bandit
+        run: pip install bandit==1.8.0
+      - name: Scan backend source
+        # -r recursive, -ll report medium+ severity, exit non-zero on findings.
+        run: bandit -r backend -ll --exclude backend/.venv
+
+  # ---------------------------------------------------------------------------
+  # 3. JavaScript dependency scan (SCA): checks the npm tree against the
+  #    GitHub Advisory DB. This is the job that catches axios 0.21.0.
+  # ---------------------------------------------------------------------------
+  js-dependency-scan:
+    name: JS deps (npm audit)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install dependencies
+        # Use `npm ci` once you commit a package-lock.json; `install` works too.
+        run: npm install --package-lock-only && npm install
+      - name: Audit frontend dependencies
+        # Fails the job if any dependency has a vulnerability at high or above.
+        run: npm audit --audit-level=high

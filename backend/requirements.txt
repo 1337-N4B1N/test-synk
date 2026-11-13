@@ -1,0 +1,16 @@
+# ---- Core app dependencies (clean / current) ----
+Django==5.1.4
+djangorestframework==3.15.2
+django-cors-headers==4.6.0
+PyMySQL==1.1.1
+# Required by PyMySQL for MySQL 8.4's default caching_sha2_password auth.
+cryptography==44.0.0
+python-dotenv==1.0.1
+gunicorn==23.0.0
+
+# ---- DELIBERATELY VULNERABLE (for the /unsafe demo) ----
+# PyYAML 5.3.1 is affected by CVE-2020-14343: arbitrary code execution
+# via yaml.full_load / yaml.load on untrusted input.
+# `pip-audit` in CI will flag this line and FAIL the pipeline.
+# To make CI pass, bump this to a clean version, e.g. PyYAML==6.0.2
+PyYAML==5.3.1

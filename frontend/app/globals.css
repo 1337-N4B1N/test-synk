@@ -1,0 +1,56 @@
+body {
+  font-family: Arial, Helvetica, sans-serif;
+  color: #000;
+  background: #fff;
+  margin: 0;
+  padding: 2rem 1rem;
+  line-height: 1.5;
+}
+
+main {
+  max-width: 640px;
+  margin: 0 auto;
+}
+
+h1 {
+  margin-bottom: 0.5rem;
+}
+
+/* Keep the form as a tidy block centered in the column. */
+form {
+  max-width: 360px;
+  margin: 1.5rem auto 0;
+}
+
+label {
+  display: block;
+  margin-bottom: 1rem;
+}
+
+input {
+  display: block;
+  margin-top: 0.25rem;
+  padding: 0.4rem;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+button {
+  padding: 0.4rem 1rem;
+}
+
+/* Back link styled as a small button. */
+.back {
+  display: inline-block;
+  margin-bottom: 1rem;
+  padding: 0.3rem 0.7rem;
+  border: 1px solid #000;
+  border-radius: 4px;
+  text-decoration: none;
+  color: #000;
+}
+
+.back:hover {
+  background: #000;
+  color: #fff;
+}
