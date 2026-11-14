@@ -31,7 +31,7 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # 2. Python static analysis (SAST): scans source for insecure patterns.
-  #    This catches the yaml.load() call in the /unsafe view (bandit B506).
+  #    This catches the yaml.load() call in the /unsafe view that was placed knowingly. (bandit B506).
   # ---------------------------------------------------------------------------
   python-static-analysis:
     name: Python code (bandit)
