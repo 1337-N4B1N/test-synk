@@ -8,7 +8,8 @@ The app itself is not the point. The gate is.
 
 - **Backend:** Django 5.1 + Django REST Framework + MySQL
 - **Frontend:** Next.js 14 (App Router)
-- **CI:** GitHub Actions running `pip-audit`, `bandit`, and `npm audit`
+- **CI:** GitHub Actions running **SCA** (`pip-audit`, `npm audit`, `Snyk`),
+  **SAST** (`bandit`), with a branch ruleset that blocks the merge
 
 Two nearly identical forms are served. They differ only in the libraries behind
 them — one clean, one vulnerable. That difference is invisible in the browser
@@ -39,14 +40,33 @@ Both forms accept the same four fields: `full_name`, `email`, `address`, `cv`
 
 | Problem | Where | Caught by |
 |---|---|---|
-| `PyYAML==5.3.1` (CVE-2020-14343) | `backend/requirements.txt:16` | `pip-audit` (dependency scan) |
+| `PyYAML==5.3.1` (CVE-2020-14343) | `backend/requirements.txt:16` | `pip-audit` **and** `Snyk` (SCA) |
 | `yaml.load()` on user input | `backend/submissions/views.py:69` | `bandit` — **see the caveat below** |
-| `axios@0.21.0` (SSRF / ReDoS / prototype pollution) | `frontend/package.json` | `npm audit` (dependency scan) |
+| `axios@0.21.0` (SSRF / ReDoS / prototype pollution) | `frontend/package.json` | `npm audit` **and** `Snyk` (SCA) |
 
 > **Important mental model:** the scanners read your **pinned dependency
 > versions** and your **source code**. They do not read your `import`
 > statements, and you do not query NVD or exploit-db by hand. These tools sync
 > those databases for you.
+
+### Why two SCA tools?
+
+`pip-audit`/`npm audit` use open advisory databases (PyPI/OSV, GitHub Advisory)
+and are free and fast. Snyk uses its own curated database and resolves the full
+transitive tree, which is why it found **17 issues in the backend and 31 in the
+frontend** where `pip-audit` reported 34 advisories across 5 packages.
+
+Running both is deliberate, not redundant:
+
+- **Free scanners = fast feedback.** No token, no quota, works in any fork.
+- **Snyk = the commercial cross-check.** Higher recall, plus fix PRs later.
+- **Disagreement is the signal.** A package both agree on is a real problem; one
+  only Snyk sees is worth a manual look (Snyk's DB sometimes includes advisories
+  not yet in OSV).
+
+The gate fails if **either** finds something at `high` or above — the union, not
+the intersection. That's the conservative choice: you don't get to ship because
+one scanner missed it.
 
 ---
 
@@ -142,48 +162,31 @@ docker compose down -v
 
 ## Path B — Manual (no Docker)
 
-> **Read this first.** The manual path is only harder for one reason: the
-> backend needs a **MySQL server it can reach over TCP on your host**. There is
-> **no SQLite fallback** — `backend/config/settings.py` always talks to MySQL.
->
-> Two traps bite almost everyone here, and both are fixed below:
-> 1. **You have the `mysql` client but no server.** Installing `mysql`/`mariadb`
->    gives you the *client* only. Check:
->    ```bash
->    which mariadbd mysqld   # a server exists only if one of these prints a path
->    ```
-> 2. **The Compose database is NOT reachable from a host-run backend.** The
->    `db` container from `docker compose up` lives on Docker's internal network;
->    a Django process on your host cannot reach it on `127.0.0.1:3306`. Do **not**
->    try to reuse the Compose `db` for the manual path — give the manual path its
->    own server, as below.
-
-Without a reachable server, `migrate` dies with:
+The `backend/config/settings.py` talks to MySQL, so the backend will not start until a MySQL-compatible server is
+reachable. Without one, `migrate` dies with:
 
 ```
 django.db.utils.OperationalError: (2003, "Can't connect to MySQL server on
 '127.0.0.1' ([Errno 111] Connection refused)")
 ```
 
-Pick **one** server option in Step 1, then do Steps 2–5.
+On Kali, `mysql` on its own is only the **client**. Installing it does not give
+you a server:
 
-### Step 1 — Get a MySQL server listening on the host
+```bash
+which mysqld mariadbd    # if both are missing, you have no server
+```
 
-**Option 1 (recommended on Kali/Debian) — install MariaDB locally.**
-It listens on a real host port, speaks `mysql_native_password` (no extra driver
-packages needed), and sidesteps all Docker-networking quirks:
+### Step 1 — Get a MySQL server running
+
+Either install one:
 
 ```bash
 sudo apt update && sudo apt install -y mariadb-server
 sudo service mariadb start        # or: sudo systemctl start mariadb
-which mariadbd                    # confirm the SERVER now exists
 ```
 
-**Option 2 — a standalone Docker MySQL, bound to loopback.**
-Note the `127.0.0.1:` prefix on the port — without it, a host-run backend may get
-"connection refused" on `127.0.0.1` even while the container is up (Docker can
-route published ports in a way that skips loopback). Do **not** run this at the
-same time as `docker compose up`; both want port 3306.
+Or run one in Docker (independent of the full Compose stack):
 
 ```bash
 docker run -d --name demo-mysql \
@@ -191,42 +194,28 @@ docker run -d --name demo-mysql \
   -e MYSQL_USER=appuser \
   -e MYSQL_PASSWORD=apppass \
   -e MYSQL_ROOT_PASSWORD=rootpass \
-  -p 127.0.0.1:3306:3306 mysql:8.4
+  -p 3306:3306 mysql:8.4
 ```
 
-Confirm — either option — that the port is actually listening on your host:
+Confirm it is listening:
 
 ```bash
-ss -lnt | grep 3306          # must print a line; empty = no reachable server
+ss -lnt | grep 3306
 ```
 
 ### Step 2 — Create the database and user
 
-**Skip this if you used Option 2** — the `mysql:8.4` container already created
-`appdb` and `appuser` for you.
-
-For the **locally installed MariaDB** (Option 1), create the user for *both*
-`localhost` (unix socket) and `127.0.0.1` (TCP), since Step 3 connects over TCP:
+The values must match `backend/.env`. If you used the Docker command above, this
+already exists — skip to Step 3. For a locally installed server:
 
 ```bash
-sudo mariadb <<'SQL'
+sudo mysql <<'SQL'
 CREATE DATABASE IF NOT EXISTS appdb CHARACTER SET utf8mb4;
-CREATE USER IF NOT EXISTS 'appuser'@'localhost'  IDENTIFIED BY 'apppass';
-CREATE USER IF NOT EXISTS 'appuser'@'127.0.0.1'  IDENTIFIED BY 'apppass';
+CREATE USER IF NOT EXISTS 'appuser'@'localhost' IDENTIFIED BY 'apppass';
 GRANT ALL PRIVILEGES ON appdb.* TO 'appuser'@'localhost';
-GRANT ALL PRIVILEGES ON appdb.* TO 'appuser'@'127.0.0.1';
 FLUSH PRIVILEGES;
 SQL
 ```
-
-Verify you can actually log in over TCP before going further:
-
-```bash
-mysql -h127.0.0.1 -P3306 -uappuser -papppass appdb -e "SELECT 1;"
-```
-
-If that works, the backend will too. If it says "connection refused", your
-server from Step 1 isn't running/reachable — fix that first.
 
 ### Step 3 — Backend
 
@@ -234,20 +223,7 @@ server from Step 1 isn't running/reachable — fix that first.
 cd backend
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env
-```
-
-Now **edit `backend/.env` and set the DB host to the TCP loopback address**:
-
-```
-DB_HOST=127.0.0.1
-```
-
-Use `127.0.0.1`, not `localhost`. With a local MariaDB, `localhost` makes the
-client switch to a unix socket, while `127.0.0.1` forces a TCP connection on
-port 3306 — which is what matches both server options above. Then:
-
-```bash
+cp .env.example .env          # already correct for the settings above
 python manage.py migrate
 python manage.py runserver
 ```
@@ -353,6 +329,7 @@ Measured on 13 Nov 2026 against this repo:
 | `Python deps (pip-audit)` | `pip-audit -r backend/requirements.txt --strict` | ❌ **fails** | 34 advisories across `PyYAML`, `Django`, `djangorestframework`, `cryptography`, `python-dotenv` |
 | `Python code (bandit)` | `bandit -r backend -ll` | ✅ **passes** | `views.py:69` carries a `# nosec` marker, which suppresses `B506` |
 | `JS deps (npm audit)` | `npm audit --audit-level=high` | ❌ **fails** | `axios 0.21.0`, plus `next 14.2.15` and `postcss` |
+| `Snyk (deps)` | `snyk test … --severity-threshold=high` | ❌ **fails** | 17 open issues in the backend, 31 in the frontend |
 
 **The bandit caveat is real and worth understanding.** The `# nosec` in
 
@@ -372,14 +349,43 @@ carries 20 advisories on its own.
 ### 3. Turn the gate into a real block
 
 A red check only *blocks* a merge if branch protection demands it. On GitHub:
-**Settings → Branches → Add branch ruleset** for `main`:
+**Settings → Rules → Rulesets → New branch ruleset** for `main`:
 
-- ✅ Require a pull request before merging
-- ✅ Require status checks to pass before merging
-- Select `Python deps (pip-audit)`, `Python code (bandit)`, `JS deps (npm audit)`
+- ✅ **Require a pull request before merging** — this is what stops direct
+  pushes to `main`. Without it, `git push origin main` bypasses everything.
+- ✅ **Require status checks to pass before merging**
+- ✅ **Require branches to be up to date** (`strict_required_status_checks_policy`)
+- Select all four checks: `Python deps (pip-audit)`, `Python code (bandit)`,
+  `JS deps (npm audit)`, `Snyk (deps)`
 
 **That is "prevent pushing" done properly** — enforced server-side, not on your
 laptop.
+
+> **Honest caveat:** GitHub.com has **no `pre-receive` hook**, so *nothing* can
+> reject a push mid-transfer. SCA needs the files, and the files only exist after
+> the commit. What a ruleset gives you is: **the vulnerable commit can exist on a
+> branch, but it can never reach `main`.** Only GitHub Enterprise Server or a
+> self-managed GitLab can reject the push itself.
+
+### The Snyk token
+
+The Snyk job reads `secrets.SNYK_TOKEN`, which is already set on this repo. To
+create your own:
+
+1. Sign up at [snyk.io](https://snyk.io) (free tier: 5 projects).
+2. **Account settings → General → Auth Token** → copy it.
+3. GitHub: **Settings → Secrets and variables → Actions → New repository
+   secret** → name it `SNYK_TOKEN`.
+
+Without the secret the job fails with an authentication error, not a
+vulnerability finding — check the log before assuming it found something.
+`Snyk` is one of the four required checks, so **a missing token also blocks the
+merge.** That's intentional: a gate you can disable by deleting a secret isn't a
+gate.
+
+Free-tier note: 5 projects and a monthly test cap. This repo uses one project
+per target (backend, frontend), so you have room — but a large org would need the
+Team plan (~$25/dev/month).
 
 ### 4. Make it green
 
@@ -425,6 +431,8 @@ gate — it never replaces it.
 set -e
 pip-audit -r backend/requirements.txt || exit 1
 (cd frontend && npm audit --audit-level=high) || exit 1
+# Optional, only if you have a Snyk token exported locally:
+# snyk test --file=backend/requirements.txt --severity-threshold=high
 ```
 
 ---
@@ -454,18 +462,9 @@ Then re-run `npm install`. Prefer fixing the `docker` group over using `sudo`.
 
 ### `Can't connect to MySQL server on '127.0.0.1' ([Errno 111] Connection refused)`
 
-No MySQL server is reachable on your host's port 3306. Two common causes:
-
-- **You have the client, not a server.** `which mariadbd mysqld` prints nothing.
-  Install/start one — see [Path B, Step 1](#step-1--get-a-mysql-server-listening-on-the-host).
-- **You're trying to reuse the Compose `db`.** The `db` container from
-  `docker compose up` is only reachable *inside* Docker, not from a host-run
-  backend — `ss -lnt | grep 3306` prints nothing on the host even though the
-  container is healthy. Give the manual path its own server (Path B, Step 1),
-  or just use the all-Docker Path A instead.
-
-Confirm a server is actually listening with `ss -lnt | grep 3306` before
-retrying `migrate`.
+No MySQL server is running. You have the client (`mysql`), not the server.
+See [Path B, Step 1](#step-1--get-a-mysql-server-running). Confirm with
+`ss -lnt | grep 3306`.
 
 ### `Permission denied` writing to `backend/media`
 
@@ -477,6 +476,20 @@ or recreate it with `mkdir -p backend/media`.
 `backend/config/__init__.py` calls `pymysql.install_as_MySQLdb()`, which reports
 itself as `1.4.6`, so this only appears if that import never ran — check you're
 starting Django through `manage.py`.
+
+### `Snyk (deps)` fails but the log says nothing about vulnerabilities
+
+Two different failures look identical from the checks list:
+
+- **Not authenticated** — `SNYK_TOKEN` is missing or expired. Real scans print
+  `Tested N dependencies for known issues`. An auth failure prints
+  `Authentication error` and never mentions a count.
+- **Genuinely vulnerable** — `found N issues`. Exit code 1 is *correct* here;
+  that's the gate working.
+
+Read the line right after `Testing (backend/requirements.txt)` to tell them
+apart. Also note `snyk/actions/setup@master` tracks a moving branch — pin it to a
+tag or SHA for reproducibility.
 
 ### Frontend loads but submissions fail
 
@@ -497,12 +510,21 @@ Something else owns MySQL's port. Stop it, or remap the host side in
 1. **Caching** — cache pip/npm installs in the workflow.
 2. **A build/test job** — real Django tests and `next build` as additional
    required checks.
-3. **Aggregate scanner** — add Google's `osv-scanner` or Trivy, which cover many
-   ecosystems in one tool.
-4. **SARIF upload** — push results to the Security tab via
-   `github/codeql-action/upload-sarif`.
-5. **Dependabot / Renovate** — automate the version churn that makes gates red.
-6. **CD** — a deploy job that only runs after the security gate passes.
+3. **SARIF upload** — push scanner results to the Security tab via
+   `github/codeql-action/upload-sarif`. Snyk, `osv-scanner`, and Trivy all emit
+   SARIF, so this is the natural next step and makes findings browsable rather
+   than log-scrolling.
+4. **Dependabot / Renovate** — automate the version churn that makes gates red.
+   This is what keeps the gate green *without* lowering its threshold.
+5. **Reachability analysis** — `pip-audit`, `npm audit`, and this Snyk setup all
+   flag a vulnerable package **present in the tree**. Snyk's commercial tier adds
+   reachability (is the vulnerable function actually called?), which is the real
+   fix for alert fatigue.
+6. **Registry proxy policy** — the only control that prevents *installation*
+   rather than merging. Point pip/npm at Nexus or Artifactory and deny versions
+   with a CVE above your threshold. Stronger than any hook, because the artifact
+   never arrives.
+7. **CD** — a deploy job that only runs after the security gate passes.
 
 ## Project layout
 
@@ -523,6 +545,7 @@ cicd-security-demo/
 │   └── Dockerfile
 ├── docker-compose.yml           mysql + backend + frontend
 ├── .github/workflows/
-│   └── security.yml             the security gate (3 jobs)
+│   └── security.yml             the security gate (4 jobs: pip-audit,
+│                                bandit, npm audit, Snyk)
 └── README.md
 ```
