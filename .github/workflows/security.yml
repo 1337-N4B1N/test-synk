@@ -68,3 +68,32 @@ jobs:
       - name: Audit frontend dependencies
         # Fails the job if any dependency has a vulnerability at high or above.
         run: npm audit --audit-level=high
+        
+  # ---------------------------------------------------------------------------
+  # 4. Snyk (SCA): scans both requirements.txt and package-lock.json.
+  # ---------------------------------------------------------------------------
+  snyk-scan:
+    name: Snyk (deps)
+    runs-on: ubuntu-latest
+    env:
+      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install Snyk CLI
+        uses: snyk/actions/setup@master
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements.txt
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+      - name: Snyk scan (backend)
+        run: snyk test --file=backend/requirements.txt --package-manager=pip --severity-threshold=high
+      - name: Snyk scan (frontend)
+        if: ${{ !cancelled() }}
+        run: snyk test --file=frontend/package-lock.json --severity-threshold=high
