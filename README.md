@@ -130,8 +130,11 @@ waits for MySQL's healthcheck, runs migrations, then serves on `runserver`.
 | Django admin | http://localhost:8000/admin/ |
 
 > `/api/` itself returns 404 — only `saysafe/` and `unsafe/` are registered.
+> The bare root `http://localhost:8000/` is also 404 — use `/admin/` for the UI.
 
-Create an admin account to browse stored submissions (and their uploaded CVs):
+Create an admin account to browse stored submissions (and their uploaded CVs).
+A fresh clone has no users, so log in as `admin` / `admin` — at the
+`Bypass password validation and create user anyway? [y/N]:` prompt, answer `y`:
 
 ```bash
 docker compose exec backend python manage.py createsuperuser
@@ -231,7 +234,9 @@ python manage.py runserver
 Migrations are committed (`submissions/migrations/0001_initial.py` and
 `0002_…`), so you do **not** need `makemigrations`.
 
-Optional, for the admin:
+Required for the admin (the smoke test below checks `/admin/`) — no default
+account exists. Use `admin` / `admin` and answer `y` at the password-validation
+bypass prompt:
 
 ```bash
 python manage.py createsuperuser
